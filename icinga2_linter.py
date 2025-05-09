@@ -126,6 +126,13 @@ def lint_file(path):
         open_paren = stripped.count("(")
         close_paren = stripped.count(")")
 
+        # Handle square brackets used in dictionary keys on the left side of an assignment
+        if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_.]*\[[^\]]+\]\s*=\s*\{', stripped):
+            # Valid dictionary key with square brackets followed by an opening '{'
+            open_square = 0  # Ignore square brackets in this case
+            close_square = 0
+            open_curly -= 1  # Prevent double counting of the '{' on the same line
+
         # Add for multiline structures (arrays/dicts) and nested objects
         for _ in range(open_square):
             brace_stack.append(("[", lineno))
@@ -133,9 +140,8 @@ def lint_file(path):
             multiline_structure_type = "array"
         for _ in range(open_curly):
             brace_stack.append(("{", lineno))
-            if not inside_object:
-                inside_multiline_structure = True
-                multiline_structure_type = "dict"
+            inside_multiline_structure = True
+            multiline_structure_type = "dict"
 
         for _ in range(close_square):
             if brace_stack and brace_stack[-1][0] == "[":
@@ -145,17 +151,11 @@ def lint_file(path):
                 issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected ']'")
 
         for _ in range(close_curly):
-            if brace_stack:
-                if brace_stack[-1][0] == "{":
-                    brace_stack.pop()
-                else:
-                    # Mismatched bracket: we expected ']', found '}'
-                    issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected ']' but found '}}'")
-            # If the last '{' was the object, end object
-            if not brace_stack and inside_object:
-                inside_object = False
-                inside_multiline_structure = False
-                multiline_structure_type = None
+            if brace_stack and brace_stack[-1][0] == "{":
+                brace_stack.pop()
+            else:
+                # Mismatched bracket: we expected '{', found '}'
+                issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected '{{' but found '}}'")
 
         # Ensure multiline structures are properly closed
         if inside_multiline_structure and multiline_structure_type == "array" and not brace_stack:
@@ -207,7 +207,7 @@ def lint_file(path):
                         if not is_quotes_balanced(stripped):
                             issues.append(f"{path}:{lineno}: ERROR unbalanced quotes in multiline structure")
                     # Check for attribute assignment without value (e.g., dict =)
-                    attr_assign = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|\+=|-=|\*=|/=)\s*$', stripped)
+                    attr_assign = re.match(r'^([a-zA-Z_][a-zA-Z0-9_.]*)\s*(=|\+=|-=|\*=|/=)\s*$', stripped)
                     if attr_assign:
                         issues.append(f"{path}:{lineno}: ERROR attribute '{attr_assign.group(1)}' assigned with operator '{attr_assign.group(2)}' but no value")
                         continue
