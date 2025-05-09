@@ -11,7 +11,7 @@ KEYWORDS = {"object", "apply", "template"}
 VALID_OBJECT_TYPES = {
     "ApiUser", "CheckCommand", "Dependency", "Endpoint", "EventCommand",
     "Host", "HostGroup", "Notification", "NotificationCommand", "ScheduledDowntime",
-    "Service", "ServiceGroup", "Timeperiod", "User", "UserGroup", "Zone",
+    "Service", "ServiceGroup", "TimePeriod", "User", "UserGroup", "Zone",
     "Comment", "Downtime", "ApiListener", "CheckerComponent", "CompatLogger", 
     "ElasticsearchWriter", "ExternalCommandListener", "FileLogger", "GelfWriter", 
     "GraphiteWriter", "IcingaApplication", "IcingaDB", "IdoMySqlConnection", 
@@ -21,6 +21,7 @@ VALID_OBJECT_TYPES = {
 }
 
 SPECIAL_KEYWORDS = {"import", "assign", "ignore"}  # Special keywords that don't require an operator
+VALID_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
 
 def suggest_correction(word, valid_words):
     """Suggest the closest valid word for a given word."""
@@ -62,13 +63,29 @@ def lint_file(path):
     inside_object = False
     inside_multiline_structure = False
     multiline_structure_type = None
+    inside_multiline_comment = False  # Track if inside a multiline comment
+    inside_ranges = False  # Track if inside ranges attribute
+    ranges_start_line = None
 
     for i, line in enumerate(lines):
         lineno = i + 1
         stripped = line.strip()
 
-        # Skip empty and comment lines
-        if not stripped or stripped.startswith("//"):
+        # Skip empty lines
+        if not stripped:
+            continue
+
+        # Handle multiline comments
+        if inside_multiline_comment:
+            if "*/" in stripped:
+                inside_multiline_comment = False
+            continue
+        if stripped.startswith("/*"):
+            inside_multiline_comment = True
+            continue
+
+        # Skip single-line comments
+        if stripped.startswith("//") or stripped.startswith("#"):
             continue
 
         # 1. Loosen object definition check
@@ -155,6 +172,27 @@ def lint_file(path):
         if inside_object or inside_multiline_structure:
             tokens = stripped.split()
             if tokens:
+                # Special validation for the 'ranges' attribute
+                if tokens[0] == "ranges" and stripped.endswith("{"):
+                    inside_ranges = True
+                    ranges_start_line = lineno
+                    continue
+
+                if inside_ranges:
+                    if "}" in stripped:
+                        inside_ranges = False
+                        continue
+
+                    # Validate weekday keys in the ranges dictionary
+                    match = re.match(r'^\s*"?([a-zA-Z]+)"?\s*=', stripped)
+                    if match:
+                        weekday = match.group(1)
+                        if weekday not in VALID_WEEKDAYS:
+                            issues.append(f"{path}:{lineno}: ERROR invalid weekday '{weekday}' in ranges attribute. Must be one of {', '.join(VALID_WEEKDAYS)}.")
+                    else:
+                        # If the line doesn't match the expected format, warn about invalid syntax
+                        issues.append(f"{path}:{lineno}: ERROR invalid syntax in ranges attribute.")
+
                 # Special check: 'import' must NOT have an operator
                 if tokens[0] == "import" and re.search(r'\s*(=|\+=|-=|\*=|/=)\s*', stripped):
                     issues.append(f"{path}:{lineno}: ERROR 'import' must not be used with an operator")
