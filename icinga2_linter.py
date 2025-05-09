@@ -123,8 +123,6 @@ def lint_file(path):
         close_curly = stripped.count("}")
         open_square = stripped.count("[")
         close_square = stripped.count("]")
-        open_paren = stripped.count("(")
-        close_paren = stripped.count(")")
 
         # Handle square brackets used in dictionary keys on the left side of an assignment
         if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_.]*\[[^\]]+\]\s*=\s*\{', stripped):
@@ -140,8 +138,9 @@ def lint_file(path):
             multiline_structure_type = "array"
         for _ in range(open_curly):
             brace_stack.append(("{", lineno))
-            inside_multiline_structure = True
-            multiline_structure_type = "dict"
+            if not inside_object:
+                inside_multiline_structure = True
+                multiline_structure_type = "dict"
 
         for _ in range(close_square):
             if brace_stack and brace_stack[-1][0] == "[":
@@ -156,6 +155,11 @@ def lint_file(path):
             else:
                 # Mismatched bracket: we expected '{', found '}'
                 issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected '{{' but found '}}'")
+            # If the last '{' was the object, end object
+            if not brace_stack and inside_object:
+                inside_object = False
+                inside_multiline_structure = False
+                multiline_structure_type = None
 
         # Ensure multiline structures are properly closed
         if inside_multiline_structure and multiline_structure_type == "array" and not brace_stack:
