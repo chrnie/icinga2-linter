@@ -3,8 +3,7 @@
 import os
 import sys
 import re
-import difflib  # Import for similarity checking
-from parse import Icinga2Parser  # Import the parser
+from parse import Icinga2Parser
 
 # Keywords and valid object types
 KEYWORDS = {"object", "apply", "template"}
@@ -19,17 +18,11 @@ VALID_OBJECT_TYPES = {
     "LiveStatusListener", "NotificationComponent", "OpenTsdbWriter", "PerfdataWriter", 
     "SyslogLogger", "WindowsEventLogLogger"
 }
+VALID_ATTRIBUTES = {"vars", "assign", "ignore", "import", "ranges"}
 
-SPECIAL_KEYWORDS = {"import", "assign", "ignore"}  # Special keywords that don't require an operator
-VALID_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
-
-def suggest_correction(word, valid_words):
-    """Suggest the closest valid word for a given word."""
-    suggestions = difflib.get_close_matches(word, valid_words, n=1, cutoff=0.8)
-    return suggestions[0] if suggestions else None
-
+# Helper functions
 def is_quotes_balanced(line):
-    """Check if quotes (single and double) are balanced, considering escaping and nesting."""
+    """Check if quotes (single and double) are balanced."""
     in_single = False
     in_double = False
     escaped = False
@@ -48,27 +41,43 @@ def is_quotes_balanced(line):
 
     return not in_single and not in_double
 
-def lint_file(path):
-    issues = []
-    lineno = 0
-    brace_stack = []
-    lines = []
+def parse_line(line, brace_stack):
+    """Parse a single line and update the brace stack."""
+    open_curly = line.count("{")
+    close_curly = line.count("}")
+    open_square = line.count("[")
+    close_square = line.count("]")
 
-    with open(path, 'r') as f:
+    for _ in range(open_curly):
+        brace_stack.append("{")
+    for _ in range(close_curly):
+        if brace_stack and brace_stack[-1] == "{":
+            brace_stack.pop()
+        else:
+            return False, "Mismatched closing '}'"
+
+    for _ in range(open_square):
+        brace_stack.append("[")
+    for _ in range(close_square):
+        if brace_stack and brace_stack[-1] == "[":
+            brace_stack.pop()
+        else:
+            return False, "Mismatched closing ']'"
+
+    return True, None
+
+def lint_file(path):
+    """Lint a single file."""
+    issues = []
+    brace_stack = []
+    inside_multiline_comment = False
+    lineno = 0
+
+    with open(path, "r") as f:
         lines = f.readlines()
 
-    parser = Icinga2Parser()
-    constants = []
-
-    inside_object = False
-    inside_multiline_structure = False
-    multiline_structure_type = None
-    inside_multiline_comment = False  # Track if inside a multiline comment
-    inside_ranges = False  # Track if inside ranges attribute
-    ranges_start_line = None
-
-    for i, line in enumerate(lines):
-        lineno = i + 1
+    for line in lines:
+        lineno += 1
         stripped = line.strip()
 
         # Skip empty lines
@@ -77,171 +86,56 @@ def lint_file(path):
 
         # Handle multiline comments
         if inside_multiline_comment:
+            print(f"DEBUG: {path}:{lineno} Multiline comment continues")
             if "*/" in stripped:
                 inside_multiline_comment = False
+                print(f"DEBUG: {path}:{lineno} Multiline comment ends")
             continue
         if stripped.startswith("/*"):
             inside_multiline_comment = True
+            print(f"DEBUG: {path}:{lineno} Multiline comment starts")
+            if stripped.endswith("*/"):
+                inside_multiline_comment = False
+                print(f"DEBUG: {path}:{lineno} Multiline comment ends in the same line")
             continue
 
         # Skip single-line comments
-        if stripped.startswith("//") or stripped.startswith("#"):
+        if stripped.startswith("//"):
+            print(f"DEBUG: {path}:{lineno} Single-line comment (//) detected")
+            continue
+        if stripped.startswith("#"):
+            print(f"DEBUG: {path}:{lineno} Single-line comment (#) detected")
             continue
 
-        # 1. Loosen object definition check
-        if not inside_object and not inside_multiline_structure:
-            tokens = stripped.split()
-            if tokens:
-                first_token = tokens[0]
-                if first_token in KEYWORDS:
-                    if len(tokens) > 1:
-                        object_type = tokens[1].strip('"')
-                        if object_type not in VALID_OBJECT_TYPES:
-                            issues.append(f"{path}:{lineno}: ERROR '{object_type}' is not a valid object type.")
-                        if first_token == "apply" and object_type in {"Dependency", "Notification"}:
-                            if not ("to Host" in stripped or "to Service" in stripped):
-                                issues.append(f"{path}:{lineno}: ERROR 'apply {object_type}' must include 'to Host' or 'to Service'.")
-                    if not is_quotes_balanced(stripped):
-                        issues.append(f"{path}:{lineno}: ERROR unbalanced quotes in object definition")
-                    if "{" in stripped:
-                        inside_object = True
-                        brace_stack.append(("{", lineno))
-                        extra_opens = stripped.count("{") - 1
-                        for _ in range(extra_opens):
-                            brace_stack.append(("{", lineno))
-                        continue
-                    else:
-                        suggestion = suggest_correction(first_token, KEYWORDS)
-                        if suggestion:
-                            issues.append(f"{path}:{lineno}: WARN '{first_token}' is not a valid keyword. Did you mean '{suggestion}'?")
-                        else:
-                            issues.append(f"{path}:{lineno}: ERROR '{first_token}' is not a valid keyword.")
-                        continue
-
-        # 2. Track opening and closing braces/brackets to determine object or structure boundaries
-        open_curly = stripped.count("{")
-        close_curly = stripped.count("}")
-        open_square = stripped.count("[")
-        close_square = stripped.count("]")
-
-        # Handle square brackets used in dictionary keys on the left side of an assignment
-        if re.match(r'^\s*[a-zA-Z_][a-zA-Z0-9_.]*\[[^\]]+\]\s*=\s*\{', stripped):
-            # Valid dictionary key with square brackets followed by an opening '{'
-            open_square = 0  # Ignore square brackets in this case
-            close_square = 0
-            open_curly -= 1  # Prevent double counting of the '{' on the same line
-
-        # Add for multiline structures (arrays/dicts) and nested objects
-        for _ in range(open_square):
-            brace_stack.append(("[", lineno))
-            inside_multiline_structure = True
-            multiline_structure_type = "array"
-        for _ in range(open_curly):
-            brace_stack.append(("{", lineno))
-            if not inside_object:
-                inside_multiline_structure = True
-                multiline_structure_type = "dict"
-
-        for _ in range(close_square):
-            if brace_stack and brace_stack[-1][0] == "[":
-                brace_stack.pop()
-            else:
-                # If mismatch, warn about expected ']' but found something else
-                issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected ']'")
-
-        for _ in range(close_curly):
-            if brace_stack and brace_stack[-1][0] == "{":
-                brace_stack.pop()
-            else:
-                # Mismatched bracket: we expected '{', found '}'
-                issues.append(f"{path}:{lineno}: ERROR mismatched bracket: expected '{{' but found '}}'")
-            # If the last '{' was the object, end object
-            if not brace_stack and inside_object:
-                inside_object = False
-                inside_multiline_structure = False
-                multiline_structure_type = None
-
-        # Ensure multiline structures are properly closed
-        if inside_multiline_structure and multiline_structure_type == "array" and not brace_stack:
-            issues.append(f"{path}:{lineno}: ERROR unclosed array structure")
-        elif inside_multiline_structure and multiline_structure_type == "dict" and not brace_stack:
-            issues.append(f"{path}:{lineno}: ERROR unclosed dictionary structure")
-
-        # Right after we detect we're inside_multiline_structure:
-        if inside_multiline_structure:
-            if not is_quotes_balanced(stripped):
-                issues.append(f"{path}:{lineno}: ERROR unbalanced quotes in multiline structure")
-
-        # 3. Validate attributes, keywords, and valid syntax inside objects or multiline structures
-        if inside_object or inside_multiline_structure:
-            tokens = stripped.split()
-            if tokens:
-                # Special validation for the 'ranges' attribute
-                if tokens[0] == "ranges" and stripped.endswith("{"):
-                    inside_ranges = True
-                    ranges_start_line = lineno
-                    continue
-
-                if inside_ranges:
-                    if "}" in stripped:
-                        inside_ranges = False
-                        continue
-
-                    # Validate weekday keys in the ranges dictionary
-                    match = re.match(r'^\s*"?([a-zA-Z]+)"?\s*=', stripped)
-                    if match:
-                        weekday = match.group(1)
-                        if weekday not in VALID_WEEKDAYS:
-                            issues.append(f"{path}:{lineno}: ERROR invalid weekday '{weekday}' in ranges attribute. Must be one of {', '.join(VALID_WEEKDAYS)}.")
-                    else:
-                        # If the line doesn't match the expected format, warn about invalid syntax
-                        issues.append(f"{path}:{lineno}: ERROR invalid syntax in ranges attribute.")
-
-                # Special check: 'import' must NOT have an operator
-                if tokens[0] == "import" and re.search(r'\s*(=|\+=|-=|\*=|/=)\s*', stripped):
-                    issues.append(f"{path}:{lineno}: ERROR 'import' must not be used with an operator")
-                    continue
-                if tokens[0] not in SPECIAL_KEYWORDS:
-                    # Allow valid syntax for multiline structures
-                    if inside_multiline_structure:
-                        if multiline_structure_type == "array" and (stripped.endswith(",") or stripped.endswith("]") or stripped.startswith('"')):
-                            continue
-                        if multiline_structure_type == "dict" and (stripped.endswith(",") or stripped.endswith("}")):
-                            continue
-                        if not is_quotes_balanced(stripped):
-                            issues.append(f"{path}:{lineno}: ERROR unbalanced quotes in multiline structure")
-                    # Check for attribute assignment without value (e.g., dict =)
-                    attr_assign = re.match(r'^([a-zA-Z_][a-zA-Z0-9_.]*)\s*(=|\+=|-=|\*=|/=)\s*$', stripped)
-                    if attr_assign:
-                        issues.append(f"{path}:{lineno}: ERROR attribute '{attr_assign.group(1)}' assigned with operator '{attr_assign.group(2)}' but no value")
-                        continue
-                    # Check if the line contains a valid attribute with an operator
-                    if not re.search(r'\s*(=|\+=|-=|\*=|/=)\s*', stripped) and not inside_multiline_structure:
-                        issues.append(f"{path}:{lineno}: ERROR invalid attribute syntax: '{stripped}'")
-                    else:
-                        # Use the parser to validate the attribute syntax
-                        try:
-                            parsed_line = parser.parse({"dummy_key": stripped}, constants)  # Example usage
-                        except Exception as e:
-                            issues.append(f"{path}:{lineno}: ERROR parsing attribute failed: {e}")
-
-        # 4. Quote check
+        # Check for unbalanced quotes
         if not is_quotes_balanced(stripped):
             issues.append(f"{path}:{lineno}: ERROR unbalanced quotes")
 
-    # 5. Unclosed brackets
-    for open_char, open_line in brace_stack:
-        issues.append(f"{path}:{open_line}: ERROR unclosed bracket '{open_char}'")
+        # Parse the line and update the brace stack
+        success, error = parse_line(stripped, brace_stack)
+        if not success:
+            issues.append(f"{path}:{lineno}: ERROR {error}")
 
+        # Debug output for multiline structures
+        if brace_stack:
+            print(f"DEBUG: {path}:{lineno} Multiline structure detected, current stack: {brace_stack}")
+
+    # Check for unclosed brackets at the end of the file
+    for char in brace_stack:
+        issues.append(f"{path}:{lineno}: ERROR unclosed bracket '{char}'")
+
+   
     return issues
 
 def find_config_files(base_path):
+    """Find all .conf files in the given directory."""
     for root, _, files in os.walk(base_path):
         for file in files:
             if file.endswith(".conf"):
                 yield os.path.join(root, file)
 
 def run_linter(path):
+    """Run the linter on the given path."""
     if not os.path.isdir(path):
         print(f"Path not found: {path}")
         sys.exit(1)
@@ -262,8 +156,7 @@ def run_linter(path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: ./icinga2_linter.py /path/to/conf.d")
+        print("Usage: ./icinga2_linter2.py /path/to/conf.d")
         sys.exit(1)
 
     run_linter(sys.argv[1])
-
