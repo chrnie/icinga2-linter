@@ -3,6 +3,7 @@
 import os
 import sys
 import re
+import argparse
 from parse import Icinga2Parser
 
 # Keywords and valid object types
@@ -66,7 +67,7 @@ def parse_line(line, brace_stack):
 
     return True, None
 
-def lint_file(path):
+def lint_file(path, debug=False):
     """Lint a single file."""
     issues = []
     brace_stack = []
@@ -86,25 +87,31 @@ def lint_file(path):
 
         # Handle multiline comments
         if inside_multiline_comment:
-            print(f"DEBUG: {path}:{lineno} Multiline comment continues")
+            if debug:
+                print(f"DEBUG: {path}:{lineno} Multiline comment continues")
             if "*/" in stripped:
                 inside_multiline_comment = False
-                print(f"DEBUG: {path}:{lineno} Multiline comment ends")
+                if debug:
+                    print(f"DEBUG: {path}:{lineno} Multiline comment ends")
             continue
         if stripped.startswith("/*"):
             inside_multiline_comment = True
-            print(f"DEBUG: {path}:{lineno} Multiline comment starts")
+            if debug:
+                print(f"DEBUG: {path}:{lineno} Multiline comment starts")
             if stripped.endswith("*/"):
                 inside_multiline_comment = False
-                print(f"DEBUG: {path}:{lineno} Multiline comment ends in the same line")
+                if debug:
+                    print(f"DEBUG: {path}:{lineno} Multiline comment ends in the same line")
             continue
 
         # Skip single-line comments
         if stripped.startswith("//"):
-            print(f"DEBUG: {path}:{lineno} Single-line comment (//) detected")
+            if debug:
+                print(f"DEBUG: {path}:{lineno} Single-line comment (//) detected")
             continue
         if stripped.startswith("#"):
-            print(f"DEBUG: {path}:{lineno} Single-line comment (#) detected")
+            if debug:
+                print(f"DEBUG: {path}:{lineno} Single-line comment (#) detected")
             continue
 
         # Check for unbalanced quotes
@@ -117,14 +124,13 @@ def lint_file(path):
             issues.append(f"{path}:{lineno}: ERROR {error}")
 
         # Debug output for multiline structures
-        if brace_stack:
+        if debug and brace_stack:
             print(f"DEBUG: {path}:{lineno} Multiline structure detected, current stack: {brace_stack}")
 
     # Check for unclosed brackets at the end of the file
     for char in brace_stack:
         issues.append(f"{path}:{lineno}: ERROR unclosed bracket '{char}'")
 
-   
     return issues
 
 def find_config_files(base_path):
@@ -134,7 +140,7 @@ def find_config_files(base_path):
             if file.endswith(".conf"):
                 yield os.path.join(root, file)
 
-def run_linter(path):
+def run_linter(path, debug=False):
     """Run the linter on the given path."""
     if not os.path.isdir(path):
         print(f"Path not found: {path}")
@@ -142,7 +148,7 @@ def run_linter(path):
 
     total_issues = 0
     for file in find_config_files(path):
-        issues = lint_file(file)
+        issues = lint_file(file, debug=debug)
         for issue in issues:
             print(issue)
             total_issues += 1
@@ -155,8 +161,9 @@ def run_linter(path):
         sys.exit(1)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: ./icinga2_linter2.py /path/to/conf.d")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Lint Icinga2 configuration files.")
+    parser.add_argument("path", help="Path to the configuration directory.")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output.")
+    args = parser.parse_args()
 
-    run_linter(sys.argv[1])
+    run_linter(args.path, debug=args.debug)
