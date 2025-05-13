@@ -20,6 +20,8 @@ VALID_OBJECT_TYPES = {
     "SyslogLogger", "WindowsEventLogLogger"
 }
 VALID_ATTRIBUTES = {"vars", "assign", "ignore", "import", "ranges"}
+object_names = {"Host": {}, "TimePeriod": {}, "User": {}}  # Track object names with path and line number
+
 
 # Helper functions
 def is_quotes_balanced(line):
@@ -127,6 +129,20 @@ def lint_file(path, debug=False):
         if re.match(r"^apply (Dependency|Notification)", stripped):
             if not re.match(r".*to\s(Host|Service).*", stripped):
                issues.append(f"{path}:{lineno}: ERROR 'apply {stripped.split()[1]} {stripped.split()[2]}' must be followed by 'to Service' or 'to Host'")
+
+        # Check for duplicate object names
+        if re.match(r"^(object|template|apply)\s+(Host|TimePeriod|User)\s+\S+", stripped):
+            parts = stripped.split()
+            object_type = parts[1]
+            object_name = parts[2]
+            if object_name in object_names[object_type]:
+                prev_path, prev_lineno = object_names[object_type][object_name]
+                issues.append(
+                    f"{path}:{lineno}: ERROR Duplicate {object_type} name '{object_name}' "
+                    f"(previously defined at {prev_path}:{prev_lineno})"
+                )
+            else:
+                object_names[object_type][object_name] = (path, lineno)
 
         # Debug output for multiline structures
         if debug and brace_stack:
