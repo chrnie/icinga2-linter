@@ -123,6 +123,11 @@ def lint_file(path, debug=False):
         if not success:
             issues.append(f"{path}:{lineno}: ERROR {error}")
 
+        # Check for "apply Dependency" or "apply Notification" rules
+        if re.match(r"^apply (Dependency|Notification)", stripped):
+            if not re.match(r".*to\s(Host|Service).*", stripped):
+               issues.append(f"{path}:{lineno}: ERROR 'apply {stripped.split()[1]} {stripped.split()[2]}' must be followed by 'to Service' or 'to Host'")
+
         # Debug output for multiline structures
         if debug and brace_stack:
             print(f"DEBUG: {path}:{lineno} Multiline structure detected, current stack: {brace_stack}")
